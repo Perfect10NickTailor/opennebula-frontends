@@ -1,0 +1,65 @@
+---
+
+- name: restart systemd-timesyncd
+  service:
+    name: systemd-timesyncd
+    state: restarted
+
+## install and configure frontend machine
+- name: install debian packages
+  apt: name={{item}} state=latest
+  with_items:
+    - apache2-utils
+    - apache2
+    - libapache2-mod-proxy-msrpc
+    - libapache2-mod-passenger
+
+- name: copy opennebula apache ssl virtualhost config to server
+  ansible.builtin.template:
+    src: /home/ntailor/ansible/computelab/roles/frontend/templates/apache_confs/opennebula.conf
+    dest: /etc/apache2/sites-available/
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: copy opennebul ssl certificate to servers
+  copy:
+    src: "{{ item }}"
+    dest: /etc/ssl/certs/
+    owner: root
+    mode: 644
+  with_fileglob:
+    - /home/ntailor/ansible/computelab/roles/frontend/templates/certs/*
+
+- name: copy opennebula ssl private key to server
+  copy:
+    src: "{{ item }}"
+    dest: /etc/ssl/private/
+    owner: root
+    mode: 644
+  with_fileglob:
+    - /home/ntailor/ansible/computelab/roles/frontend/templates/private/*
+
+- name: Enable SSL virtual host for openebula
+  shell: a2enmod ssl passenger headers proxy proxy_http rewrite proxy_balancer proxy_wstunnel
+
+- name: enable opennebula virtualhost
+  shell: a2ensite opennebula.conf
+
+- name: Restart service httpd, in all cases
+  service:
+    name: apache2
+    state: restarted
+
+- name: Enable service httpd and ensure it is not masked
+  systemd:
+    name: apache2
+    enabled: yes
+    masked: no
+
+- name: get service facts
+  service_facts:
+
+- name: Check to see if httpd is running
+  debug:
+    var: ansible_facts.services["apache2.service"]

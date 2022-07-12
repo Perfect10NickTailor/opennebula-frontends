@@ -1,0 +1,47 @@
+## install and configure frontend machine
+- name: install debian packages
+  apt: name={{item}} state=latest
+  with_items:
+    - mariadb-server
+    - python3-pymysql
+    
+- name: Secure mysql installation
+  mysql_secure_installation:
+    login_password: ''
+    new_password: "{{ mysqlnewinstallpassword }}"
+    user: "{{ mysqlrootuser }}"
+    login_host: localhost
+    hosts: ['localhost', '127.0.0.1', '::1']
+    change_root_password: true
+    remove_anonymous_user: true
+    disallow_root_login_remotely: true
+    remove_test_db: true
+  register: mysql_secure
+  
+
+# To see detailed output
+- debug:
+    var: mysql_secure
+
+- name: Create opennebula database
+  community.mysql.mysql_db:
+    check_implicit_admin: yes
+    login_user: "{{ mysqlrootuser }}"
+    login_password: "{{ mysqlnewinstallpassword }}"
+    name: "{{ database_to_create }}"
+    state: present
+  register: database
+
+- debug:
+    var: database
+
+# usernames and passwords should be included from a file outside of this git-repo, for now this is developmental.
+- name: create user 'oneadmin' with password 'oneadmin' for '{{opennebula_db}}' and grant all priveleges
+  community.mysql.mysql_user:
+    check_implicit_admin: yes
+    login_user: "{{ mysqlrootuser }}"
+    login_password: "{{ mysqlnewinstallpassword }}"
+    name: "{{ mysql_oneadmin_user }}"
+    password: "{{ mysql_oneadmin_password }}"
+    priv: '*.*:ALL'
+    state: present

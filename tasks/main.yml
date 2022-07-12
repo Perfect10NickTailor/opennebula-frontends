@@ -1,0 +1,468 @@
+---
+## install and configure frontend machine
+- name: install debian packages
+  apt: name={{item}} state=latest
+  with_items:
+    - curl
+    - gnupg
+    - build-essential
+    - dirmngr
+    - ca-certificates
+    - memcached
+
+- name: import the opennebula apt key
+  shell: apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 592F7F0585E16EBF
+
+- name: Show Key list
+  shell: apt-key list
+  register: keylist
+
+- debug:
+    var: keylist.stdout_lines
+
+- name: import the phusionpassenger apt key
+  shell: apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 561F9B9CAC40B2F7
+
+- name: Show Key list
+  shell: apt-key list
+  register: keylist2
+
+- debug:
+    var: keylist2.stdout_lines
+
+- name: add opennebula apt repository
+  apt_repository:
+    repo: 'deb https://{{ userkey }}:{{ keypass }}@enterprise.opennebula.io/repo/6.2/Ubuntu/20.04 stable opennebula'
+    state: present
+    filename: opennebula
+    update_cache: yes
+
+- name: add bionic phusionpassenger apt repository
+  apt_repository:
+    repo: 'deb https://oss-binaries.phusionpassenger.com/apt/passenger focal main'
+    state: present
+    filename: passenger
+    update_cache: yes
+
+- name: wget apt-transport-https ca-certificates 
+  shell: apt-get -y install wget apt-transport-https ca-certificates
+  register: install2
+
+- debug:
+    var: install2
+
+- name: apt-get update
+  shell: apt-get update
+
+#this is now called as a serparate task mysql.yml. If the server is listed under the group mysql_servers only then will mysql installation be executed.
+#this will allow us to deploy mysql either individually or in a typical HA master-slave setup. The mysql replication setup for typical HA will have to added later if
+#that route is used
+- name: Include mysql task when groupvar mysqlservers is defined
+  include_tasks: mysql.yml
+  when: "'mysql_servers' in group_names"
+
+- name: install opennebula packages
+  apt: name={{item}} state=latest
+  with_items:
+    - opennebula
+    - opennebula-sunstone
+    - opennebula-gate
+    - opennebula-flow
+    - opennebula-rubygems
+    - opennebula-fireedge
+    - gnupg
+
+- name: Copy oned.conf to server with updated DB(host,user,pass)
+  ansible.builtin.template:
+    src: /home/ntailor/ansible/computelab/roles/frontend/templates/oned.conf.j2
+    dest: /etc/one/oned.conf
+    owner: oneadmin
+    group: oneadmin
+    mode: '0644'
+  register: onedconf
+
+- debug:
+    var: onedconf
+
+- name: Copy sunstone-server.conf to server configs
+  ansible.builtin.template:
+    src: /home/ntailor/ansible/computelab/roles/frontend/templates/sunstone-server.conf.j2
+    dest: /etc/one/sunstone-server.conf
+    owner: oneadmin
+    group: oneadmin
+    mode: '0644'
+
+- name: Add credentials to Oneadmin
+  become_user: oneadmin
+  shell: cat /var/lib/one/.one/one_auth
+  register: authfile
+
+- debug:
+    var: authfile.stdout_lines
+
+- name: Set fact for authfile
+  set_fact:
+    password: "{{ authfile.stdout }}"
+
+- name: update permissions opennebula permissions
+  shell: chmod a+x /var/lib/one/.one && chmod a+x /var/lib/one && chmod a+x /var/lib/one/.one && chmod a+x /var/lib/one/sunstone
+
+- name: Include apache configuration
+  include_tasks: apache.yml
+  when: "'apache_servers' in group_names"
+
+- name: start opennebula
+  ansible.builtin.systemd:
+    name: opennebula
+    state: started
+    enabled: yes
+  register: openebula
+
+- debug:
+    var: openebula.state
+
+#when using apache this should not be activated manually, apache handles it
+# - name: start sunstone
+#   ansible.builtin.systemd:
+#     name: opennebula-sunstone
+#     state: started
+#     enabled: yes
+#   register: sunstone
+
+# - debug:
+#     var: sunstone.state
+
+- name: start opennebula-gate
+  ansible.builtin.systemd:
+    name: opennebula-gate
+    state: started
+    enabled: yes
+  register: gate
+
+- debug:
+    var: gate.state
+
+- name: start opennebula-flow
+  ansible.builtin.systemd:
+    name: opennebula-flow
+    state: started
+    enabled: yes
+  register: flow
+
+- debug:
+    var: flow.state
+
+- name: start opennebula-novc
+  ansible.builtin.systemd:
+   name: opennebula-novnc.service
+   state: started
+   enabled: yes
+  register: novnc
+
+- debug:
+    var: novnc.state
+
+- name: start systemd-timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: started
+    enabled: yes
+  register: timesyncd
+
+- debug:
+    var: timesyncd.state
+
+- name: Add frontend_server_primary to the zone
+  shell: onezone server-add 0 --name {{ item }} --rpc http://{{ hostvars[item].ansible_host }}:2633/RPC2
+  when: "'frontend_server_primary' in group_names"
+  loop: "{{ groups['frontend_server_primary'] }}"
+  register: addzone
+
+- debug: 
+    var: addzone, group_names
+
+#this section needs ironing out. it updates the endpoint to use the floater ip
+- name: update endpoint of zone
+  shell: EDITOR='sed -i "s/localhost/{{ update_zone }}/g"' onezone update 0
+  when: "'frontend_server_primary' in group_names"
+  register: updatezone
+
+- debug: 
+    var: updatezone, group_names
+
+#this is section is if for if there is a frontend server in HA if there none listed under frontend_HA it will simply 
+#deploy in stand-alone
+- name: Check if server is listed under frontend_HA
+  set_fact: 
+    frontend_list: true
+  when: "'frontend_HA' in group_names"
+
+- debug:
+    var: frontend_list
+
+## this section is for frontendHA tasks
+- name: Stopping OpenNebula on frontend_server_primary
+  shell: systemctl stop opennebula
+  register: stop
+- debug: 
+    var: stop, group_names
+
+- name: delete sqlfile if it exists to create a current one.
+  shell: rm -f /var/lib/one/opennebula.sql
+
+- name: make backup of OpenNebula database
+  shell: onedb backup -u oneadmin -p {{ mysql_oneadmin_password }} -d opennebula /var/lib/one/opennebula.sql
+  when: "'frontend_server_primary' in group_names"
+  register: backup
+
+- debug:
+    var: backup
+#Development HA deployment
+
+- name: Fetch the OpenNebula sql dumpfile from frontend_server_primary
+  fetch: 
+    src: "/var/lib/one/opennebula.sql"
+    dest: "buffer/tmp/opennebula.sql"
+    flat: yes
+  delegate_to: "{{groups['frontend_server_primary'][0]}}"
+  when: "'frontend_server_primary' in group_names"
+  register: fetch
+
+- debug:
+    var: fetch, group_names
+
+
+- name: Copy the ON-sqldump file from master to the secondary HA nodes
+  copy:
+    src: "buffer/tmp/opennebula.sql"
+    dest: "/tmp/opennebula.sql"
+  when: "'frontend_HA' in group_names"
+  register: sqlcopy
+
+- debug:
+    var: sqlcopy
+
+
+- name: Fetch the fence_host.sh
+  fetch: 
+    src: "/var/lib/one/remotes/hooks/ft/fence_host.sh"
+    dest: "buffer/tmp/fence_host.sh"
+    flat: yes
+  delegate_to: "{{groups['frontend_server_primary'][0]}}"
+  when: "'frontend_server_primary' in group_names"
+  register: fence_host
+
+- debug:
+    var: fence_host, group_names
+
+- name: Copy the fence.sh to frontend_HA hosts
+  copy:
+    src: "buffer/tmp/fence_host.sh"
+    dest: "/var/lib/one/remotes/hooks/ft/fence_host.sh"
+  when: "'frontend_HA' in group_names"
+  register: fence_host
+- debug:
+    var: fence_host
+
+#create a tar of /etc/one
+- name: Create tar of /etc/one/
+  shell: cd /etc/one;tar -cvf /etc/one/one.tar *
+  when: "'frontend_server_primary' in group_names"
+  register: tar
+
+- debug:
+    var: tar
+  
+#this section is to copy /etc/one 
+- name: Fetch the one.tar 
+  fetch: 
+    src: "/etc/one/one.tar"
+    dest: "buffer/tmp/one.tar"
+    flat: yes
+  delegate_to: "{{groups['frontend_server_primary'][0]}}"
+  when: "'frontend_server_primary' in group_names"
+  register: etcone
+
+- debug:
+    var: etcone, group_names
+
+- name: Copy the one.tar to frontend_HA hosts
+  copy:
+    src: "buffer/tmp/one.tar"
+    dest: "/etc/one/one.tar"
+  when: "'frontend_HA' in group_names"
+  register: copyone
+
+- debug:
+    var: copyone
+
+- name: untar one.tar in /etc/one on the frontend_HA hosts
+  shell: cd /etc/one;tar -xvf /etc/one/one.tar
+  when: "'frontend_HA' in group_names"
+  register: untar
+
+- debug:
+    var: untar, group_names
+
+#copy authentication section in /var/lib/one/.one 
+- name: Create tar of /var/lib/one/.one/*
+  shell: cd /var/lib/one/.one/;tar -cvf /var/lib/one/.one/one1.tar *
+  when: "'frontend_server_primary' in group_names"
+  register: tarone
+
+- debug:
+    var: tarone
+
+- name: Fetch the /var/lib/one/.one/one1.tar
+  fetch: 
+    src: "/var/lib/one/.one/one1.tar"
+    dest: "buffer/tmp/one1.tar"
+    flat: yes
+  delegate_to: "{{groups['frontend_server_primary'][0]}}"
+  when: "'frontend_server_primary' in group_names"
+  register: one1tar
+
+- debug:
+    var: one1tar, group_names
+
+- name: Copy the /var/lib/one/.one/one1.tar to frontend_HA hosts
+  copy:
+    src: "buffer/tmp/one1.tar"
+    dest: "/var/lib/one/.one/one1.tar"
+  when: "'frontend_HA' in group_names"
+  register: copyone1
+
+- debug:
+    var: copyone1
+
+- name: untar /var/lib/one/.one/one1.tar on the frontend_HA hosts
+  shell: cd /var/lib/one/.one/;tar -xvf /var/lib/one/.one/one1.tar
+  when: "'frontend_HA' in group_names"
+  register: untar2
+
+- debug:
+    var: untar2, group_names
+
+#copy ssh keys from primary to frontend_HA servers
+- name: Create tar of /var/lib/one/.ssh/* from frontend_server_primary
+  shell: cd /var/lib/one/.ssh/;tar -cvf /var/lib/one/.ssh/one2.tar *
+  when: "'frontend_server_primary' in group_names"
+  register: sshkeys
+
+- debug:
+    var: sshkeys
+
+- name: Fetch the .ssh keys
+  fetch: 
+    src: "/var/lib/one/.ssh/one2.tar"
+    dest: "buffer/tmp/one2.tar"
+    flat: yes
+  delegate_to: "{{groups['frontend_server_primary'][0]}}"
+  when: "'frontend_server_primary' in group_names"
+  register: one2tar
+
+- debug:
+    var: one2tar, group_names
+
+- name: Copy the one2.tar to frontend_HA hosts
+  copy:
+    src: "buffer/tmp/one2.tar"
+    dest: "/var/lib/one/.ssh/one2.tar"
+  when: "'frontend_HA' in group_names"
+  register: copyone2
+
+- debug:
+    var: copyone2
+
+- name: untar one2.tar in /var/lib/one/.ssh on the frontend_HA hosts
+  shell: cd /var/lib/one/.ssh/;tar -xvf /var/lib/one/.ssh/one2.tar
+  when: "'frontend_HA' in group_names"
+  register: untar3
+
+- debug:
+    var: untar3, group_names
+
+# this task has two separate groups it pulls variables from frontend_server_primary and frontend-HA
+#if you have secondary servers make sure the "ha_server_id: x" is defined at the host_var/serverlevel
+# for the federation. The raft leaqer hook is basically the public floater address for the front-ends
+- name: updates the rafthook configuration for all frontend servers
+  ansible.builtin.template:
+    src: /home/ntailor/ansible/computelab/roles/frontend/templates/oned.conf.j2
+    dest: /etc/one/oned.conf
+    owner: oneadmin
+    group: oneadmin
+    mode: '0644'
+  when: "'frontend_HA','frontend_server_primary' in group_names"
+
+- name: start OpenNebula
+  shell: systemctl start opennebula
+  when: "'frontend_server_primary' in group_names"
+
+- debug:
+    var: group_names
+
+#this is to debug the group name lists
+- name: finding frontend_HA list
+  set_fact:
+    frontend_values: "{{ item }}"
+  with_items: "{{ item }}"
+  when: (item == 'frontend_HA')
+  loop:
+  - "{{ group_names }}"
+
+- name: Add Secondary Node frontends to the zone
+  shell: onezone server-add 0 --name {{ item }} --rpc http://{{ hostvars[item].ansible_host }}:2633/RPC2
+  when: "'frontend_server_primary' in group_names"
+  loop: "{{ groups['frontend_HA'] }}"
+  register: addzone
+
+- debug: 
+    var: addzone, group_names
+
+- name: Restore database to secondary nodes
+  shell: onedb restore -f -S localhost -u oneadmin -p {{ mysql_oneadmin_password }} -d opennebula /tmp/opennebula.sql
+  when: "'frontend_HA' in group_names"
+  register: restoredb
+
+- debug:
+    var: restoredb
+
+- name: enable services on frontend_HA
+  shell: systemctl enable opennebula opennebula-gate opennebula-flow opennebula-novnc apache2 --now
+  register: enable
+# when: "'frontend_HA' in group_names"
+
+- debug:
+    var: enable
+
+- name: check whether custom line exists
+  lineinfile:
+    path: /etc/one/oned.conf
+    regexp: '^FEDERATION ='
+    state: absent
+  check_mode: true
+  register: line_exists
+
+- name: Add Federation Configs to frontend_server_primary & frontend_HA servers
+  blockinfile:
+    dest: /etc/one/oned.conf
+    insertafter: inserthere
+    block: |
+      FEDERATION = [
+          MODE          = "STANDALONE",
+          ZONE_ID       = 0,
+          SERVER_ID     = {{ ha_server_id }},
+          MASTER_ONED   = ""
+      ]
+  when: line_exists and "'frontend_server_primary','frontend_HA' in group_names"
+  register: federation0
+
+- debug:
+    var: federation0
+
+- name: Restart OpenNebula on all hosts
+  shell: systemctl restart opennebula
+  register: restart
+
+- debug: 
+    var: restart
