@@ -1,0 +1,22 @@
+[all:children]
+frontend_server_primary
+mysql_servers
+apache_servers
+frontend_HA
+
+[frontend_server_primary]
+testmachine1 ansible_host=192.168.10.1
+
+[mysql_servers]
+testmachine3 ansible_host=192.168.10.3
+testmachine1 ansible_host=192.168.10.1
+testmachine2 ansible_host=192.168.10.2
+
+[apache_servers]
+testmachine3 ansible_host=192.168.10.3
+testmachine1 ansible_host=192.168.10.1
+testmachine2 ansible_host=192.168.10.2
+
+[frontend_HA]
+testmachine2 ansible_host=192.168.10.2
+testmachine3 ansible_host=192.168.10.3
