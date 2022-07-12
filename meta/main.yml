@@ -1,0 +1,16 @@
+---
+
+galaxy_info:
+  author: Nick Tailor
+  description: This role will deploy opennebual frontends in standalone or HA
+  company: "Nick Tailor Consulting Ltd."
+  license: BSD
+  min_ansible_version: 2.3
+  platforms:
+    - name: Ubuntu
+      versions:
+        - '20.04'
+  galaxy_tags:
+    - 'opennebula_fe'
+dependencies: []
+allow_duplicates: yes
