@@ -36,7 +36,7 @@
     var: database
 
 # usernames and passwords should be included from a file outside of this git-repo, for now this is developmental.
-- name: create user 'oneadmin' with password 'oneadmin' for '{{opennebula_db}}' and grant all priveleges
+- name: create user 'oneadmin' with password 'oneadminpassword' for '{{opennebula_db}}' and grant all priveleges
   community.mysql.mysql_user:
     check_implicit_admin: yes
     login_user: "{{ mysqlrootuser }}"
